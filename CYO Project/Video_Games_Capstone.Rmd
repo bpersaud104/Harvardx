@@ -1,0 +1,1126 @@
+---
+title: "Video Game Ratings and Playtime: A Predictive Analysis"
+author: "Bryan Persaud"
+date: "November 2026"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(tidyverse)
+library(randomForest)
+library(knitr)
+```
+
+# Executive Summary
+
+This project examined whether video game ratings are associated with recorded playtime and whether ratings can predict playtime. After removing duplicate observations and excluding games with zero ratings, 13,184 games were retained for analysis.
+
+Exploratory analysis revealed a very weak relationship between ratings and playtime. Five predictive approaches were evaluated, including a baseline model, linear regression, and random forest regression. Models using ratings alone performed similarly to the baseline, while incorporating popularity and engagement measures improved predictive accuracy.
+
+The multiple-predictor random forest achieved the strongest performance, with a testing RMSE of 0.7135 and MAE of 0.5249 on the log-transformed playtime scale. Cross-validation and sensitivity analysis supported this finding.
+
+Overall, video game ratings alone were weak predictors of recorded playtime. Popularity and engagement measures provided additional predictive information, although substantial variation remained unexplained.
+
+# Introduction
+
+Video games are a popular form of entertainment, and player engagement can vary considerably across different games. Some games receive high user ratings but have relatively short playtimes, while others receive lower ratings and attract substantial player engagement.
+
+This project investigates whether video game ratings are associated with recorded playtime and whether ratings can be used to predict playtime. It also examines whether additional popularity and engagement measures improve
+predictive accuracy.
+
+The analysis uses a publicly available video game dataset obtained from Kaggle. Exploratory data analysis, correlation analysis, linear regression, and random forest regression are used to investigate the research question.
+
+The primary research questions are:
+
+1. Is there an association between video game ratings and recorded playtime?
+2. Can video game ratings predict recorded playtime?
+3. Does incorporating popularity and engagement measures improve predictive performance?
+
+The goal is to identify predictive relationships rather than establish causal effects.
+
+# Dataset Description
+
+The dataset was obtained from Kaggle and contains information for about 20,580 video games.
+
+The original dataset includes eight variables:
+
+- `id`: Unique game identifier.
+- `name`: Video game title.
+- `released`: Game release date.
+- `added`: Number of users who added the game.
+- `playtime`: Recorded playtime.
+- `reviews_count`: Number of recorded reviews.
+- `ratings_count`: Number of recorded ratings.
+- `rating`: Average game rating.
+
+The analysis focuses primarily on `rating` and `playtime`.
+Additional variables, including `added` and `ratings_count`, are used to investigate whether popularity and engagement measures improve predictive accuracy.
+
+The data were obtained from:
+
+Shivam Vadalia. *Video Games Dataset*. Kaggle.
+https://www.kaggle.com/datasets/shivamvadalia27/video-games
+
+## Data Import
+
+```{r data-import}
+games <- read_csv("data/games.csv")
+
+dim(games)
+
+glimpse(games)
+```
+
+# Data Cleaning and Preparation
+
+The original dataset contained 20,580 observations and eight variables. During data cleaning, 580 exact duplicate rows were identified and removed using the `distinct()` function, leaving 20,000 unique observations.
+
+Of these observations, 6,816 had a recorded rating of zero. Because the meaning of zero ratings could not be confidently established, these observations were excluded from the modeling dataset. Observations with missing rating or playtime values were also excluded as part of the cleaning procedure, although neither variable contained missing values.
+
+After cleaning, 13,184 observations remained for exploratory analysis and predictive modeling. Excluding games with zero ratings may introduce selection bias, so the results should be interpreted as applying primarily to games with positive recorded ratings.
+
+```{r data-cleaning}
+# Remove duplicate observations
+games_clean <- games %>%
+  distinct()
+
+# Count duplicate rows
+duplicate_count <- nrow(games) -
+  nrow(games_clean)
+
+# Count zero ratings
+zero_rating_count <- sum(
+  games_clean$rating == 0,
+  na.rm = TRUE
+)
+
+# Prepare modeling dataset
+games_model <- games_clean %>%
+  filter(
+    !is.na(rating),
+    rating > 0,
+    !is.na(playtime)
+  )
+
+# Summarize data preparation
+cleaning_summary <- tibble(
+  Description = c(
+    "Original observations",
+    "Duplicate rows removed",
+    "Zero rating observations",
+    "Final modeling observations"
+  ),
+  Count = c(
+    nrow(games),
+    duplicate_count,
+    zero_rating_count,
+    nrow(games_model)
+  )
+)
+
+knitr::kable(
+  cleaning_summary,
+  caption = "Summary of Data Cleaning"
+)
+```
+
+```{r missing-values}
+# Count missing values in each variable
+missing_summary <- games %>%
+  summarise(
+    across(
+      everything(),
+      ~sum(is.na(.))
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Missing_Values"
+  )
+
+knitr::kable(
+  missing_summary,
+  caption = "Missing Values by Variable"
+)
+```
+
+The missing-value analysis showed that seven of the eight variables contained no missing observations. The release date variable was the only variable with missing values, with 686 observations (3.33% of the original dataset). Because release date was not included in the predictive models, these missing values did not require additional treatment. The rating and playtime variables contained no missing values, although zero ratings were handled separately during data cleaning.
+
+# Exploratory Data Analysis
+
+Exploratory data analysis was conducted to examine the distributions of video game ratings and playtime,
+identify extreme observations, and investigate relationships among the variables.
+
+## Distribution of Playtime
+
+The distribution of playtime was examined using descriptive statistics and visualizations.
+
+```{r playtime-summary}
+playtime_summary <- games_model %>%
+  summarise(
+    Minimum = min(playtime),
+    Q1 = quantile(playtime, 0.25),
+    Median = median(playtime),
+    Mean = mean(playtime),
+    Q3 = quantile(playtime, 0.75),
+    Maximum = max(playtime)
+  )
+
+knitr::kable(
+  playtime_summary,
+  digits = 2,
+  caption = "Descriptive Statistics for Playtime"
+)
+```
+
+```{r playtime-distribution, fig.width=8, fig.height=5}
+ggplot(games_model, aes(x = playtime)) +
+  geom_histogram(
+    bins = 50,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Video Game Playtime",
+    x = "Recorded Playtime",
+    y = "Number of Games"
+  ) +
+  theme_minimal()
+```
+
+```{r log-playtime-distribution, fig.width=8, fig.height=5}
+ggplot(
+  games_model,
+  aes(x = log1p(playtime))
+) +
+  geom_histogram(
+    bins = 50,
+    fill = "darkgreen",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Log-Transformed Playtime",
+    x = "log(1 + Playtime)",
+    y = "Number of Games"
+  ) +
+  theme_minimal()
+```
+
+The descriptive statistics showed that recorded playtime was highly right-skewed. The median playtime was 2, while the mean was approximately 3.61. The first and third quartiles were 1 and 4, respectively, indicating that the middle 50% of games had relatively low recorded playtime values. However, the maximum playtime was 900, suggesting the presence of extreme observations. Because of this skewness, a logarithmic transformation using log(1 + playtime) was applied for predictive modeling to reduce the influence of extreme values.
+
+## Distribution of Video Game Ratings
+
+The distribution of positive video game ratings was examined to understand how ratings varied across
+the cleaned dataset.
+
+```{r rating-summary}
+rating_summary <- games_model %>%
+  summarise(
+    Minimum = min(rating),
+    Q1 = quantile(rating, 0.25),
+    Median = median(rating),
+    Mean = mean(rating),
+    Q3 = quantile(rating, 0.75),
+    Maximum = max(rating)
+  )
+
+knitr::kable(
+  rating_summary,
+  digits = 2,
+  caption = "Descriptive Statistics for Video Game Ratings"
+)
+```
+
+```{r rating-distribution, fig.width=8, fig.height=5}
+ggplot(games_model, aes(x = rating)) +
+  geom_histogram(
+    bins = 40,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Video Game Ratings",
+    x = "Average Game Rating",
+    y = "Number of Games"
+  ) +
+  theme_minimal()
+```
+
+The descriptive statistics showed that video game ratings ranged from 1.00 to 4.80, with a mean of 3.28 and a median of 3.39. The first and third quartiles were 2.77 and 3.88, respectively, indicating that the middle 50% of games had ratings within this range. The mean was slightly lower than the median, suggesting some influence from lower-rated games. These results apply to the cleaned dataset, which excludes observations with zero ratings.
+
+## Relationship Between Ratings and Playtime
+
+Scatterplots and correlation analysis were used to investigate whether higher-rated video games tended
+to have longer recorded playtimes.
+
+```{r rating-playtime-scatter, fig.width=8, fig.height=5}
+ggplot(games_model, aes(x = rating, y = playtime)) +
+  geom_point(alpha = 0.25, color = "steelblue") +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    title = "Video Game Ratings vs. Playtime",
+    x = "Average Game Rating",
+    y = "Recorded Playtime"
+  ) +
+  theme_minimal()
+```
+
+```{r rating-log-playtime-scatter, fig.width=8, fig.height=5}
+ggplot(
+  games_model,
+  aes(x = rating, y = log1p(playtime))
+) +
+  geom_point(alpha = 0.25, color = "darkgreen") +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    title = "Video Game Ratings vs. Log-Transformed Playtime",
+    x = "Average Game Rating",
+    y = "log(1 + Playtime)"
+  ) +
+  theme_minimal()
+```
+
+```{r rating-playtime-correlation}
+correlation_results <- tibble(
+  Method = c(
+    "Pearson: Rating vs. Playtime",
+    "Spearman: Rating vs. Playtime",
+    "Pearson: Rating vs. Log Playtime"
+  ),
+  Correlation = c(
+    cor(
+      games_model$rating,
+      games_model$playtime,
+      method = "pearson"
+    ),
+    cor(
+      games_model$rating,
+      games_model$playtime,
+      method = "spearman"
+    ),
+    cor(
+      games_model$rating,
+      log1p(games_model$playtime),
+      method = "pearson"
+    )
+  )
+)
+
+knitr::kable(
+  correlation_results,
+  digits = 4,
+  caption = "Correlation Between Ratings and Playtime"
+)
+```
+
+The scatterplots and correlation analysis indicated that video game ratings had very little association with recorded playtime. The Pearson correlation between ratings and raw playtime was approximately 0.0894, suggesting a very weak positive linear relationship. However, the Spearman correlation was approximately -0.0064, indicating virtually no monotonic relationship. After applying a logarithmic transformation to playtime, the Pearson correlation decreased to approximately 0.0188. These findings suggest that ratings alone are unlikely to provide substantial predictive information about playtime. The difference between the raw and transformed correlations also highlights the influence of the highly skewed playtime distribution.
+
+# Predictive Modeling
+
+To evaluate whether video game ratings could predict recorded playtime, several regression models were
+developed and compared.
+
+The modeling approaches included a baseline model, linear regression, and random forest regression.
+
+Models were initially developed using ratings alone.
+Additional models incorporated the number of users who added each game and the number of recorded ratings.
+
+The dataset was divided into training and testing subsets, with approximately 80% of observations used for training and 20% reserved for testing.
+
+A random seed of 123 was used to ensure reproducibility.
+
+The response variable was transformed using log(1 + playtime) to reduce the influence of extremely high playtime values.
+
+```{r train-test-split}
+set.seed(123)
+
+train_index <- sample(
+  seq_len(nrow(games_model)),
+  size = floor(0.8 * nrow(games_model))
+)
+
+train_data <- games_model[train_index, ]
+test_data <- games_model[-train_index, ]
+
+train_data <- train_data %>%
+  mutate(
+    log_playtime = log1p(playtime),
+    log_added = log1p(added),
+    log_ratings_count = log1p(ratings_count)
+  )
+
+test_data <- test_data %>%
+  mutate(
+    log_playtime = log1p(playtime),
+    log_added = log1p(added),
+    log_ratings_count = log1p(ratings_count)
+  )
+
+split_summary <- tibble(
+  Dataset = c("Training", "Testing"),
+  Observations = c(
+    nrow(train_data),
+    nrow(test_data)
+  )
+)
+
+knitr::kable(
+  split_summary,
+  caption = "Training and Testing Dataset Sizes"
+)
+```
+
+## Baseline Model
+
+A baseline model was developed to establish a reference point for evaluating predictive performance.
+
+The baseline predicts the mean log-transformed playtime from the training dataset for every observation in the
+testing dataset.
+
+Model performance was evaluated using Root Mean Squared Error (RMSE) and Mean Absolute Error (MAE).
+
+Lower RMSE and MAE values indicate better predictive accuracy.
+
+```{r baseline-model}
+# Calculate mean log-transformed playtime
+baseline_mean <- mean(train_data$log_playtime)
+
+# Generate baseline predictions
+baseline_predictions <- rep(
+  baseline_mean,
+  nrow(test_data)
+)
+
+# Define evaluation functions
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+mae <- function(actual, predicted) {
+  mean(abs(actual - predicted))
+}
+
+# Calculate baseline performance
+baseline_rmse <- rmse(
+  test_data$log_playtime,
+  baseline_predictions
+)
+
+baseline_mae <- mae(
+  test_data$log_playtime,
+  baseline_predictions
+)
+
+# Create results table
+baseline_results <- tibble(
+  Model = "Baseline",
+  RMSE = baseline_rmse,
+  MAE = baseline_mae
+)
+
+knitr::kable(
+  baseline_results,
+  digits = 4,
+  caption = "Baseline Model Performance"
+)
+```
+
+The baseline model produced an RMSE of approximately 0.7686 and an MAE of 0.5936 on the testing dataset. These results establish a reference point for evaluating more advanced predictive models. A model that achieves lower error values than the baseline demonstrates improved predictive accuracy on the held-out testing data.
+
+## Linear Regression Using Ratings Only
+
+A simple linear regression model was developed to investigate whether video game ratings could predict
+recorded playtime.
+
+The model used average game rating as the independent variable and log-transformed playtime as the response
+variable.
+
+The model was trained using the training dataset and evaluated using the held-out testing dataset.
+
+```{r linear-regression-rating}
+# Train linear regression model
+lm_model <- lm(
+  log_playtime ~ rating,
+  data = train_data
+)
+
+# Display model summary
+summary(lm_model)
+
+# Predict on testing dataset
+lm_predictions <- predict(
+  lm_model,
+  newdata = test_data
+)
+
+# Evaluate model performance
+lm_rmse <- rmse(
+  test_data$log_playtime,
+  lm_predictions
+)
+
+lm_mae <- mae(
+  test_data$log_playtime,
+  lm_predictions
+)
+
+# Create performance table
+lm_results <- tibble(
+  Model = "Linear Regression - Rating Only",
+  RMSE = lm_rmse,
+  MAE = lm_mae
+)
+
+knitr::kable(
+  lm_results,
+  digits = 4,
+  caption = "Rating-Only Linear Regression Performance"
+)
+```
+
+The rating-only linear regression model produced a testing RMSE of approximately 0.7683 and an MAE of 0.5941. These results were nearly identical to the baseline model, indicating that video game ratings alone provided very little improvement in predictive performance. The model also had an R-squared value of approximately 0.00023, suggesting that ratings explained only about 0.023% of the variation in log-transformed playtime in the training dataset. These findings support the exploratory analysis, which identified a very weak association between ratings and playtime.
+
+## Random Forest Using Ratings Only
+
+A random forest regression model was developed to investigate whether a nonlinear modeling approach could improve playtime predictions using video game ratings alone.
+
+Random forest combines predictions from multiple decision trees to capture potentially complex relationships between variables.
+
+The model was trained using 500 trees, with a minimum terminal node size of 20 observations.
+
+Performance was evaluated using the same testing dataset and evaluation metrics as the linear regression model.
+
+```{r random-forest-rating}
+# Set seed for reproducibility
+set.seed(123)
+
+# Train random forest using rating only
+rf_model <- randomForest(
+  log_playtime ~ rating,
+  data = train_data,
+  ntree = 500,
+  nodesize = 20
+)
+
+# Generate predictions on testing data
+rf_predictions <- predict(
+  rf_model,
+  newdata = test_data
+)
+
+# Calculate performance metrics
+rf_rmse <- rmse(
+  test_data$log_playtime,
+  rf_predictions
+)
+
+rf_mae <- mae(
+  test_data$log_playtime,
+  rf_predictions
+)
+
+# Create results table
+rf_results <- tibble(
+  Model = "Random Forest - Rating Only",
+  RMSE = rf_rmse,
+  MAE = rf_mae
+)
+
+knitr::kable(
+  rf_results,
+  digits = 4,
+  caption = "Rating-Only Random Forest Performance"
+)
+```
+
+The rating-only random forest model produced a testing RMSE of approximately 0.7698 and an MAE of 0.5960. Both error values were slightly higher than those of the baseline and rating-only linear regression models. This indicates that the random forest algorithm did not improve predictive accuracy when ratings were used as the only predictor. The findings further suggest that video game ratings alone contain limited information for predicting recorded playtime.
+
+## Multiple Linear Regression
+
+A multiple linear regression model was developed to evaluate whether additional popularity and engagement
+measures could improve predictions of recorded playtime.
+
+The model included average game rating, the log-transformed number of users who added the game, and the log-transformed number of recorded ratings.
+
+The number of reviews was excluded because it was nearly identical to the number of ratings, making it largely redundant.
+
+The model was trained using the same training dataset and evaluated using the held-out testing dataset.
+
+```{r multiple-linear-regression}
+# Train multiple linear regression model
+lm_multiple <- lm(
+  log_playtime ~ rating + log_added + log_ratings_count,
+  data = train_data
+)
+
+# Display model summary
+summary(lm_multiple)
+
+# Generate predictions on testing dataset
+lm_multiple_predictions <- predict(
+  lm_multiple,
+  newdata = test_data
+)
+
+# Calculate performance metrics
+lm_multiple_rmse <- rmse(
+  test_data$log_playtime,
+  lm_multiple_predictions
+)
+
+lm_multiple_mae <- mae(
+  test_data$log_playtime,
+  lm_multiple_predictions
+)
+
+# Create results table
+lm_multiple_results <- tibble(
+  Model = "Multiple Linear Regression",
+  RMSE = lm_multiple_rmse,
+  MAE = lm_multiple_mae
+)
+
+knitr::kable(
+  lm_multiple_results,
+  digits = 4,
+  caption = "Multiple Linear Regression Performance"
+)
+```
+
+The multiple linear regression model achieved a testing RMSE of approximately 0.7232 and an MAE of 0.5528, improving upon both rating-only models and the baseline. The model had an R-squared value of approximately 0.1115 on the training dataset, explaining about 11.15% of the variation in log-transformed playtime. The inclusion of popularity and engagement measures provided additional predictive information beyond ratings alone. Although rating had a positive coefficient after accounting for the other predictors, these associations should not be interpreted as causal relationships. The relatively low R-squared value also indicates that substantial variation in playtime remains unexplained.
+
+## Random Forest With Multiple Predictors
+
+A random forest regression model was developed using average game rating, the log-transformed number of users who added the game, and the log-transformed number of recorded ratings.
+
+Random forest regression can capture nonlinear relationships and interactions between predictors without requiring a linear relationship.
+
+The model consisted of 500 decision trees with a minimum terminal node size of 20 observations.
+
+Performance was evaluated using the same held-out testing dataset as the previous models.
+
+```{r multiple-random-forest}
+set.seed(123)
+
+# Train random forest model
+rf_multiple <- randomForest(
+  log_playtime ~ rating + log_added + log_ratings_count,
+  data = train_data,
+  ntree = 500,
+  nodesize = 20,
+  importance = TRUE
+)
+
+# Generate predictions
+rf_multiple_predictions <- predict(
+  rf_multiple,
+  newdata = test_data
+)
+
+# Calculate evaluation metrics
+rf_multiple_rmse <- rmse(
+  test_data$log_playtime,
+  rf_multiple_predictions
+)
+
+rf_multiple_mae <- mae(
+  test_data$log_playtime,
+  rf_multiple_predictions
+)
+
+# Create results table
+rf_multiple_results <- tibble(
+  Model = "Random Forest - Multiple Predictors",
+  RMSE = rf_multiple_rmse,
+  MAE = rf_multiple_mae
+)
+
+knitr::kable(
+  rf_multiple_results,
+  digits = 4,
+  caption = "Multiple-Predictor Random Forest Performance"
+)
+```
+
+The multiple-predictor random forest model achieved a testing RMSE of approximately 0.7135 and an MAE of 0.5249, representing the lowest prediction errors among the five models evaluated. Compared with the baseline model, RMSE decreased by approximately 7.2%, while MAE decreased by approximately 11.6%. The random forest also outperformed multiple linear regression, suggesting that a more flexible modeling approach captured additional predictive patterns. However, the improvement was modest, and considerable uncertainty in playtime predictions remained.
+
+```{r random-forest-importance}
+# Display variable importance
+importance_results <- importance(rf_multiple)
+
+knitr::kable(
+  round(importance_results, 2),
+  caption = "Random Forest Variable Importance"
+)
+
+# Visualize variable importance
+varImpPlot(
+  rf_multiple,
+  main = "Random Forest Variable Importance"
+)
+```
+
+The random forest variable importance analysis indicated that the log-transformed number of users who added a game was the most important predictor according to the permutation importance measure (%IncMSE). Game rating and the log-transformed number of recorded ratings also contributed predictive information. These findings suggest that measures of game popularity and engagement were more informative than ratings alone. However, variable importance does not establish causation, and the results should be interpreted cautiously because some predictors are correlated.
+
+# Model Performance Comparison
+
+The five predictive approaches were compared using Root Mean Squared Error (RMSE) and Mean Absolute Error (MAE) on the held-out testing dataset.
+
+Both metrics were calculated using log-transformed playtime. Lower values indicate better predictive
+performance.
+
+The comparison evaluates whether ratings alone provide useful predictive information and whether additional popularity and engagement measures improve model accuracy.
+
+```{r model-comparison, results='asis'}
+model_comparison <- bind_rows(
+  baseline_results,
+  lm_results,
+  rf_results,
+  lm_multiple_results,
+  rf_multiple_results
+)
+
+cat("\\begin{table}[!htbp]\n")
+cat("\\centering\n")
+cat("\\begin{tabular}{lrr}\n")
+cat("\\hline\n")
+cat("Model & RMSE & MAE \\\\\n")
+cat("\\hline\n")
+
+for (i in seq_len(nrow(model_comparison))) {
+  cat(
+    paste0(
+      model_comparison$Model[i],
+      " & ",
+      sprintf("%.4f", model_comparison$RMSE[i]),
+      " & ",
+      sprintf("%.4f", model_comparison$MAE[i]),
+      " \\\\\n"
+    )
+  )
+}
+
+cat("\\hline\n")
+cat("\\end{tabular}\n")
+cat("\\caption{Comparison of Predictive Model Performance}\n")
+cat("\\end{table}\n")
+```
+
+```{r model-comparison-plot, fig.width=9, fig.height=6}
+model_comparison_long <- model_comparison %>%
+  pivot_longer(
+    cols = c(RMSE, MAE),
+    names_to = "Metric",
+    values_to = "Error"
+  )
+
+ggplot(
+  model_comparison_long,
+  aes(
+    x = reorder(Model, Error),
+    y = Error,
+    fill = Metric
+  )
+) +
+  geom_col(
+    position = "dodge",
+    width = 0.7
+  ) +
+  coord_flip() +
+  labs(
+    title = "Predictive Model Performance Comparison",
+    x = "Model",
+    y = "Prediction Error (Log Playtime Scale)",
+    fill = "Metric"
+  ) +
+  theme_minimal()
+```
+
+The model comparison demonstrated that ratings alone provided little predictive information about recorded video game playtime. Both the rating-only linear regression and random forest models performed similarly to the baseline. However, incorporating the number of users who added a game and the number of recorded ratings improved predictive performance. The multiple-predictor random forest achieved the lowest testing RMSE of 0.7135 and MAE of 0.5249, outperforming the multiple linear regression model, which achieved an RMSE of 0.7232 and MAE of 0.5528. These findings suggest that popularity and engagement measures provide additional predictive information, although substantial variation in playtime remains unexplained.
+
+```{r model-improvement}
+rmse_improvement <- (
+  (baseline_rmse - rf_multiple_rmse) /
+    baseline_rmse
+) * 100
+
+mae_improvement <- (
+  (baseline_mae - rf_multiple_mae) /
+    baseline_mae
+) * 100
+
+improvement_results <- tibble(
+  Metric = c("RMSE", "MAE"),
+  Percentage_Improvement = c(
+    rmse_improvement,
+    mae_improvement
+  )
+)
+
+knitr::kable(
+  improvement_results,
+  digits = 2,
+  caption = "Random Forest Improvement Over Baseline"
+)
+```
+
+# Model Validation Using Five-Fold Cross-Validation
+
+Five-fold cross-validation was conducted to evaluate the stability of the multiple linear regression and
+multiple-predictor random forest models.
+
+The training dataset was divided into five approximately equal subsets. Each model was trained five times, using four subsets for training and the remaining subset for validation.
+
+The average Root Mean Squared Error (RMSE) and its standard deviation were calculated across the five folds.
+
+Cross-validation was performed using only the original training dataset, preserving the held-out testing
+dataset for the final model comparison.
+
+```{r cross-validation}
+set.seed(123)
+
+# Number of folds
+k <- 5
+
+# Assign observations to folds
+fold_id <- sample(
+  rep(1:k, length.out = nrow(train_data))
+)
+
+# Store validation errors
+cv_lm_rmse <- numeric(k)
+cv_rf_rmse <- numeric(k)
+
+# Perform five-fold cross-validation
+for (i in 1:k) {
+
+  cv_train <- train_data[fold_id != i, ]
+  cv_valid <- train_data[fold_id == i, ]
+
+  # Multiple linear regression
+  cv_lm <- lm(
+    log_playtime ~ rating + log_added +
+      log_ratings_count,
+    data = cv_train
+  )
+
+  lm_pred <- predict(
+    cv_lm,
+    newdata = cv_valid
+  )
+
+  cv_lm_rmse[i] <- rmse(
+    cv_valid$log_playtime,
+    lm_pred
+  )
+
+  # Multiple-predictor random forest
+  cv_rf <- randomForest(
+    log_playtime ~ rating + log_added +
+      log_ratings_count,
+    data = cv_train,
+    ntree = 500,
+    nodesize = 20
+  )
+
+  rf_pred <- predict(
+    cv_rf,
+    newdata = cv_valid
+  )
+
+  cv_rf_rmse[i] <- rmse(
+    cv_valid$log_playtime,
+    rf_pred
+  )
+}
+
+# Summarize cross-validation results
+cv_results <- tibble(
+  Model = c(
+    "Multiple Linear Regression",
+    "Random Forest - Multiple Predictors"
+  ),
+  Mean_RMSE = c(
+    mean(cv_lm_rmse),
+    mean(cv_rf_rmse)
+  ),
+  SD_RMSE = c(
+    sd(cv_lm_rmse),
+    sd(cv_rf_rmse)
+  )
+)
+
+knitr::kable(
+  cv_results,
+  digits = 4,
+  caption = "Five-Fold Cross-Validation Results"
+)
+```
+
+Five-fold cross-validation was used to evaluate the predictive performance and stability of the multiple linear regression and random forest models. The multiple linear regression model achieved an average validation RMSE of approximately 0.738, while the random forest achieved a lower average RMSE of approximately 0.724. The standard deviations of the RMSE values were approximately 0.0150 and 0.0155, respectively. These results were consistent with the held-out testing results and provided additional evidence that the multiple-predictor random forest performed better than multiple linear regression. However, the difference was modest, and cross-validation does not guarantee that the same performance will generalize to other datasets.
+
+# Regression Diagnostics
+
+Regression diagnostics were conducted to evaluate the assumptions and limitations of the multiple linear regression model.
+
+The analysis examined residual patterns, normality, constant variance, multicollinearity, and potentially
+influential observations.
+
+These diagnostics help determine whether the linear regression model adequately represents the data and whether its coefficients should be interpreted with caution.
+
+```{r regression-diagnostic-plots, fig.width=9, fig.height=8}
+# Display four regression diagnostic plots
+par(mfrow = c(2, 2))
+
+plot(lm_multiple)
+
+# Restore default plotting layout
+par(mfrow = c(1, 1))
+```
+
+The regression diagnostic plots indicated some departures from the assumptions of multiple linear regression. The residual plots suggested uneven variability, while the Normal Q-Q plot showed departures from normality, particularly in the upper tail. The Scale-Location plot also suggested that residual variance was not completely constant across fitted values. Most observations had relatively low leverage, although potentially influential observations required further examination. These findings indicate that the linear regression results should be interpreted cautiously and support comparing the model with a more flexible approach such as random forest regression.
+
+```{r multicollinearity}
+# Calculate variance inflation factors
+vif_results <- car::vif(lm_multiple)
+
+knitr::kable(
+  data.frame(
+    Predictor = names(vif_results),
+    VIF = as.numeric(vif_results)
+  ),
+  digits = 3,
+  caption = "Variance Inflation Factors"
+)
+```
+
+Variance Inflation Factors were calculated to assess multicollinearity among the predictors. The VIF values were approximately 1.73 for rating, 3.84 for log-transformed added counts, and 4.62 for log-transformed ratings counts. These results suggest moderate correlation among some predictors, although the values do not indicate extreme multicollinearity. Nevertheless, the regression coefficients should be interpreted cautiously because correlated predictors can affect coefficient estimates and their uncertainty.
+
+## Influential Observations
+
+Cook's distance was calculated to identify observations that may have a substantial influence on the multiple
+linear regression model.
+
+A commonly used screening threshold is 4/n, where n represents the number of observations in the training
+dataset.
+
+Observations exceeding this threshold were examined as potentially influential rather than automatically removed from the analysis.
+
+```{r cooks-distance}
+# Calculate Cook's distance
+cooks_values <- cooks.distance(lm_multiple)
+
+# Calculate screening threshold
+cooks_threshold <- 4 / nrow(train_data)
+
+# Count observations exceeding threshold
+influential_count <- sum(
+  cooks_values > cooks_threshold
+)
+
+# Calculate percentage
+influential_percentage <- (
+  influential_count / length(cooks_values)
+) * 100
+
+# Summarize results
+cooks_summary <- tibble(
+  Measure = c(
+    "Maximum Cook's Distance",
+    "Screening Threshold (4/n)",
+    "Observations Above Threshold",
+    "Percentage Above Threshold"
+  ),
+  Value = c(
+    max(cooks_values),
+    cooks_threshold,
+    influential_count,
+    influential_percentage
+  )
+)
+
+knitr::kable(
+  cooks_summary,
+  digits = 5,
+  caption = "Cook's Distance Summary"
+)
+```
+
+```{r cooks-distance-plot, fig.width=9, fig.height=5}
+plot(
+  cooks_values,
+  type = "h",
+  main = "Cook's Distance for Multiple Linear Regression",
+  xlab = "Training Observation Index",
+  ylab = "Cook's Distance",
+  col = "steelblue"
+)
+
+abline(
+  h = cooks_threshold,
+  col = "red",
+  lty = 2
+)
+
+legend(
+  "topright",
+  legend = "Screening Threshold (4/n)",
+  col = "red",
+  lty = 2,
+  bty = "n"
+)
+```
+
+Cook's distance was used to assess potentially influential observations in the multiple linear regression model. The maximum Cook's distance was approximately 0.00741, and 496 observations, representing approximately 4.70% of the training dataset, exceeded the screening threshold of 4/n. These observations may influence the estimated regression coefficients, but exceeding the threshold alone does not justify removing them. Because extreme playtime values may represent legitimate observations, the analysis retained the original modeling dataset and used a separate sensitivity analysis to examine the robustness of the predictive results.
+
+# Sensitivity Analysis
+
+A sensitivity analysis was conducted to investigate whether extreme playtime observations affected the
+relative performance of the predictive models.
+
+The 99th percentile of playtime in the training dataset was used as a threshold for identifying extreme values.
+
+The previously trained multiple linear regression and random forest models were evaluated on the subset of testing observations with playtime at or below this threshold.
+
+The models were not retrained, and the original training and testing split was preserved.
+
+This analysis provides an additional assessment of model performance for games with less extreme playtime values.
+
+```{r sensitivity-threshold}
+# Calculate 99th percentile from training data
+playtime_threshold <- quantile(
+  train_data$playtime,
+  probs = 0.99
+)
+
+# Count test observations above threshold
+extreme_test_count <- sum(
+  test_data$playtime > playtime_threshold
+)
+
+threshold_summary <- tibble(
+  Measure = c(
+    "99th Percentile Playtime Threshold",
+    "Test Observations Above Threshold"
+  ),
+  Value = c(
+    as.numeric(playtime_threshold),
+    extreme_test_count
+  )
+)
+
+knitr::kable(
+  threshold_summary,
+  caption = "Sensitivity Analysis Threshold"
+)
+```
+
+```{r sensitivity-model-comparison}
+# Identify test observations within threshold
+non_extreme_index <- test_data$playtime <=
+  playtime_threshold
+
+# Actual values for non-extreme test games
+actual_non_extreme <- test_data$log_playtime[
+  non_extreme_index
+]
+
+# Linear regression predictions
+lm_non_extreme <- lm_multiple_predictions[
+  non_extreme_index
+]
+
+# Random forest predictions
+rf_non_extreme <- rf_multiple_predictions[
+  non_extreme_index
+]
+
+# Calculate performance
+sensitivity_results <- tibble(
+  Model = c(
+    "Multiple Linear Regression",
+    "Random Forest - Multiple Predictors"
+  ),
+  RMSE = c(
+    rmse(actual_non_extreme, lm_non_extreme),
+    rmse(actual_non_extreme, rf_non_extreme)
+  ),
+  MAE = c(
+    mae(actual_non_extreme, lm_non_extreme),
+    mae(actual_non_extreme, rf_non_extreme)
+  )
+)
+
+knitr::kable(
+  sensitivity_results,
+  digits = 4,
+  caption = "Model Performance Excluding Extreme Test Playtime"
+)
+```
+
+A sensitivity analysis was conducted to examine whether extreme playtime observations influenced model performance. The 99th percentile of training playtime was 36, and 21 testing observations exceeded this threshold. When the previously trained models were evaluated using only testing observations at or below the threshold, multiple linear regression achieved an RMSE of approximately 0.649 and an MAE of 0.529. The random forest achieved a lower RMSE of approximately 0.634 and an MAE of 0.500. These findings indicate that the random forest maintained its predictive advantage for games with less extreme playtime values. However, because the evaluation subset was selected based on observed playtime, these results are interpreted as a sensitivity analysis rather than an independent estimate of general predictive performance.
+
+# Conclusion
+
+This project investigated whether video game ratings were associated with recorded playtime and whether ratings could be used to predict playtime. Using a publicly available dataset containing 20,580 original observations, exploratory data analysis, correlation analysis, linear regression, and random forest regression were conducted. After removing 580 duplicate observations and excluding games with zero ratings, 13,184 games remained for analysis and predictive modeling.
+
+The exploratory analysis revealed that video game ratings had very little association with playtime. The Spearman correlation was approximately -0.0064, while the Pearson correlation between ratings and log-transformed playtime was approximately 0.0188. Furthermore, the rating-only linear regression model explained approximately 0.023% of the variation in log-transformed playtime. These findings suggest that ratings alone provide limited information for predicting playtime.
+
+Including additional popularity and engagement measures improved predictive performance. The multiple-predictor random forest achieved the lowest testing RMSE of approximately 0.7135 and MAE of 0.5249. Compared with the baseline model, these results represented improvements of approximately 7.2% in RMSE and 11.6% in MAE.
+
+Five-fold cross-validation also supported the random forest's performance advantage, with an average RMSE of approximately 0.7238 compared with 0.7377 for multiple linear regression. A sensitivity analysis excluding extreme playtime observations from the evaluation produced similar findings.
+
+Overall, the results indicate that video game ratings alone are weak predictors of recorded playtime. Measures of popularity and engagement provide additional predictive information, although substantial variation in playtime remains unexplained. These findings demonstrate the value of evaluating multiple predictors and modeling approaches when investigating patterns in video game engagement.
+
+
+# Limitations and Future Work
+
+Several limitations should be considered when interpreting the results.
+
+First, the dataset was observational, meaning the relationships identified in this project should not be interpreted as causal. Higher ratings do not necessarily cause longer playtime, and popularity measures may be associated with other characteristics that were not included in the analysis.
+
+Second, observations with zero ratings were excluded because their meaning could not be confidently established. Although this decision prevented potentially unavailable ratings from being treated as confirmed low ratings, it may have introduced selection bias. Consequently, the findings may not generalize to games without positive recorded ratings.
+
+Third, the playtime distribution was highly right-skewed and contained extreme observations. A logarithmic transformation was applied to reduce the influence of these values, but regression diagnostics still indicated departures from normality and constant residual variance.
+
+Fourth, the dataset contained a limited number of predictors. Important characteristics such as game genre, platform, release year, game length, and player preferences were not included in the predictive models. These factors may help explain additional variation in playtime.
+
+Additionally, popularity measures such as the number of users who added a game and the number of recorded ratings may be closely related to player engagement. These variables may not be available before playtime is observed, limiting the models' usefulness for forecasting the playtime of newly released games.
+
+Future research could incorporate additional game characteristics, investigate alternative regression algorithms, and evaluate performance using datasets collected from different sources or time periods. Further analysis could also examine whether relationships between ratings and playtime differ across genres or gaming platforms.
+
+Despite these limitations, the project provides evidence that popularity and engagement measures improve predictions of recorded playtime compared with using game ratings alone.
+
+# References
+
+1. Vadalia, S. *Video Games Dataset*. Kaggle.
+   https://www.kaggle.com/datasets/shivamvadalia27/video-games
+
+2. R Core Team. (2026). *R: A Language and Environment for Statistical Computing*. R Foundation for
+   Statistical Computing.
+   https://www.R-project.org/
+
+3. Wickham, H., et al. (2019). Welcome to the tidyverse.
+   *Journal of Open Source Software*, 4(43), 1686.
+   https://doi.org/10.21105/joss.01686
+
+4. Liaw, A., & Wiener, M. (2002). Classification and Regression by randomForest. 
+   *R News*, 2(3), 18-22.
